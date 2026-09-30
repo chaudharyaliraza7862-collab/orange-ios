@@ -1,0 +1,119 @@
+workflows:
+  ios-compile-check:
+    name: Orange iOS - Compile Check (No Apple account required)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      flutter: 3.38.7
+      xcode: 16.4
+      cocoapods: default
+      vars:
+        API_BASE_URL: "https://orange-app-backend.blockchaintestin.workers.dev/"
+        BUNDLE_ID: "com.blockchaintestin.orangeapp"
+        IOS_DISTRIBUTION: "0"
+        REQUIRE_FIREBASE_IOS: "0"
+        AGORA_APP_ID: ""
+        REVENUECAT_IOS_PUBLIC_KEY: ""
+        GOOGLE_MAPS_IOS_API_KEY: ""
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+    scripts:
+      - name: Configure Orange iOS build
+        script: |
+          bash codemagic/configure_ios.sh
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install --repo-update
+      - name: Compile iOS app without code signing
+        script: |
+          flutter build ios --release --no-codesign \
+            --build-name=1.0.0 \
+            --build-number="$PROJECT_BUILD_NUMBER" \
+            --dart-define="API_BASE_URL=$API_BASE_URL" \
+            --dart-define="AGORA_APP_ID=${AGORA_APP_ID:-}" \
+            --dart-define="REVENUECAT_IOS_PUBLIC_KEY=${REVENUECAT_IOS_PUBLIC_KEY:-}"
+      - name: Package compile-check app
+        script: |
+          cd build/ios/iphoneos
+          ditto -c -k --sequesterRsrc --keepParent Runner.app Orange-iOS-Unsigned-App.zip
+    artifacts:
+      - build/ios/iphoneos/Orange-iOS-Unsigned-App.zip
+      - /tmp/xcodebuild_logs/*.log
+
+  ios-testflight:
+    name: Orange iOS - Signed IPA + TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      groups:
+        - appstore_credentials
+        - orange_ios
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.blockchaintestin.orangeapp
+      flutter: 3.38.7
+      xcode: 16.4
+      cocoapods: default
+      vars:
+        API_BASE_URL: "https://orange-app-backend.blockchaintestin.workers.dev/"
+        BUNDLE_ID: "com.blockchaintestin.orangeapp"
+        IOS_DISTRIBUTION: "1"
+        REQUIRE_FIREBASE_IOS: "1"
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+    scripts:
+      - name: Validate required iOS credentials
+        script: |
+          set -e
+          missing=0
+          for name in APP_STORE_CONNECT_PRIVATE_KEY APP_STORE_CONNECT_KEY_IDENTIFIER APP_STORE_CONNECT_ISSUER_ID GOOGLE_SERVICE_INFO_PLIST_BASE64; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              echo "ERROR: Missing Codemagic variable: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "Add the missing variables to the Codemagic groups listed in CODEMAGIC_IOS_QUICK_START.md"
+            exit 1
+          fi
+      - name: Configure Orange iOS build
+        script: |
+          bash codemagic/configure_ios.sh
+      - name: Get Flutter packages
+        script: |
+          flutter pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          cd ios
+          pod install --repo-update
+      - name: Apply Apple provisioning profiles
+        script: |
+          xcode-project use-profiles
+      - name: Build signed IPA
+        script: |
+          flutter build ipa --release \
+            --build-name=1.0.0 \
+            --build-number="$PROJECT_BUILD_NUMBER" \
+            --dart-define="API_BASE_URL=$API_BASE_URL" \
+            --dart-define="AGORA_APP_ID=${AGORA_APP_ID:-}" \
+            --dart-define="REVENUECAT_IOS_PUBLIC_KEY=${REVENUECAT_IOS_PUBLIC_KEY:-}" \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
+        submit_to_app_store: false
